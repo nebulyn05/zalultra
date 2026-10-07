@@ -337,11 +337,10 @@ export default async function handler(request) {
     let method;
     let stage = 'initializing';
 
-    try {
-      stage = 'get_upstream_url';
-      upstreamUrl = getUpstreamUrl(request);
-      stage = 'read_method';
-      method = request.method.toUpperCase();
+    stage = 'get_upstream_url';
+    upstreamUrl = getUpstreamUrl(request);
+    stage = 'read_method';
+    method = request.method.toUpperCase();
     const upstreamController = new AbortController();
     let timeout;
 
