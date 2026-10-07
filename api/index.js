@@ -58,6 +58,7 @@ export default async function handler(request) {
 
     for (let redirectNumber = 0; redirectNumber <= MAX_REDIRECTS; redirectNumber++) {
       log('fetch_before', { url: current.toString(), redirectNumber });
+      // For GET redirects, issue the next request as a fresh bare fetch after resolving Location.
 
       // Do not touch request.headers or add a Host header. The earlier
       // successful transport test proved bare fetch() works on this runtime.
