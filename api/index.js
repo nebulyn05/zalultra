@@ -365,10 +365,14 @@ export default async function handler(request) {
       upstreamTimeoutMs: UPSTREAM_TIMEOUT_MS
     });
 
-    stage = 'build_forward_headers';
+    stage = 'build_forward_headers_start';
+    log('forward_headers_start', { method });
+    const forwardHeaders = getForwardHeaders(request);
+    log('forward_headers_ready', { headerCount: Array.from(forwardHeaders.keys()).length });
+    stage = 'build_fetch_init';
     const init = {
       method,
-      headers: getForwardHeaders(request),
+      headers: forwardHeaders,
       redirect: 'follow',
       signal: upstreamController.signal
     };
@@ -480,14 +484,11 @@ export default async function handler(request) {
       headers: responseHeaders
     });
   } catch (error) {
-    console.error(JSON.stringify({
-      requestId,
-      event: 'proxy_stage_failure',
+    log('proxy_stage_failure', {
       stage: typeof stage === 'string' ? stage : 'unknown',
       errorName: error?.name,
-      errorMessage: error?.message,
-      elapsedMs: Date.now() - startedAt
-    }));
+      errorMessage: error?.message
+    });
 
     const isAbort = error?.name === 'AbortError' || error?.code === 'ABORT_ERR' || /timeout|aborted/i.test(error?.message || '');
     console.error(JSON.stringify({
