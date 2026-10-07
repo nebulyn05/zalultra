@@ -1,6 +1,7 @@
 const RAW_TARGET_URL = process.env.TARGET_URL || 'https://zalcrm.com';
 const BRAND_NAME = process.env.BRAND_NAME || 'YourBrand';
-const BUILD_MARKER = 'transport-minimal-2026-10-07';
+const BUILD_MARKER = 'redirect-follow-2026-10-07';
+const MAX_REDIRECTS = 5;
 
 function getTarget() {
   const raw = String(RAW_TARGET_URL).trim();
@@ -49,16 +50,9 @@ export const maxDuration = 60;
 export default async function handler(request) {
   const requestId = crypto.randomUUID();
   const started = Date.now();
-
-  const log = (event, extra = {}) => {
-    console.log(JSON.stringify({
-      requestId,
-      event,
-      build: BUILD_MARKER,
-      elapsedMs: Date.now() - started,
-      ...extra
-    }));
-  };
+  const log = (event, extra = {}) => console.log(JSON.stringify({
+    requestId, event, build: BUILD_MARKER, elapsedMs: Date.now() - started, ...extra
+  }));
 
   if (request.method === 'OPTIONS') {
     return new Response(null, {
@@ -71,63 +65,95 @@ export default async function handler(request) {
     });
   }
 
-  let target;
-  let method;
-
   try {
-    target = upstreamUrl(request);
-    method = String(request.method || 'GET').toUpperCase();
+    const original = upstreamUrl(request);
+    const method = String(request.method || 'GET').toUpperCase();
+    let current = original;
+    let cookieJar = [];
+    let upstream;
+    
+    log('proxy_start', { method, path: incomingUrl(request).pathname, upstreamUrl: original.toString() });
 
-    log('proxy_start', {
-      method,
-      path: incomingUrl(request).pathname,
-      upstreamUrl: target.toString()
-    });
+    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
+      log('upstream_fetch_start', { url: current.toString(), redirectNumber: redirects });
 
-    // Deliberately do not inspect request.headers or request.signal.
-    // This isolates Vercel request-object handling from upstream transport.
-    log('transport_fetch_start', {
-      method,
-      upstreamUrl: target.toString()
-    });
+      const headers = new Headers();
+      headers.set('host', TARGET.host);
+      if (cookieJar.length) headers.set('cookie', cookieJar.join('; '));
 
-    const fetchStarted = Date.now();
-    const upstream = await fetch(target, {
-      method,
-      redirect: 'manual'
-    });
+      upstream = await fetch(current, {
+        method,
+        headers,
+        redirect: 'manual'
+      });
 
-    log('transport_fetch_complete', {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      location: upstream.headers.get('location'),
-      contentType: upstream.headers.get('content-type'),
-      fetchMs: Date.now() - fetchStarted
-    });
+      log('upstream_fetch_complete', {
+        status: upstream.status,
+        location: upstream.headers.get('location'),
+        contentType: upstream.headers.get('content-type'),
+        redirectNumber: redirects
+      });
 
-    const headers = responseHeaders(upstream);
+      const cookies = typeof upstream.headers.getSetCookie === 'function'
+        ? upstream.headers.getSetCookie()
+        : [];
+      for (const cookie of cookies) {
+        const pair = cookie.split(';', 1)[0];
+        const name = pair.split('=', 1)[0];
+        cookieJar = cookieJar.filter(existing => existing.split('=', 1)[0] !== name);
+        cookieJar.push(pair);
+      }
 
-    const cookies = typeof upstream.headers.getSetCookie === 'function'
-      ? upstream.headers.getSetCookie()
-      : [];
+      if (upstream.status < 300 || upstream.status >= 400) break;
 
-    for (const cookie of cookies) {
+      const location = upstream.headers.get('location');
+      if (!location) break;
+
+      const next = new URL(location, current);
+      if (next.origin !== TARGET.origin) {
+        log('redirect_external', { location: next.toString() });
+        break;
+      }
+
+      current = next;
+    }
+
+    const headers = new Headers();
+    const blocked = new Set([
+      'connection','keep-alive','proxy-authenticate','proxy-authorization',
+      'te','trailer','transfer-encoding','upgrade','host','content-length',
+      'content-encoding','location','set-cookie'
+    ]);
+
+    for (const [name, value] of upstream.headers) {
+      if (!blocked.has(name.toLowerCase())) headers.set(name, value);
+    }
+
+    for (const cookie of (typeof upstream.headers.getSetCookie === 'function'
+      ? upstream.headers.getSetCookie() : [])) {
       headers.append('set-cookie', rewriteCookie(cookie));
+    }
+
+    // Preserve any cookies established while internally following redirects.
+    for (const pair of cookieJar) {
+      headers.append('set-cookie', rewriteCookie(pair + '; Path=/'));
     }
 
     const location = upstream.headers.get('location');
     if (location) {
-      const locationUrl = new URL(location, target);
-      if (locationUrl.origin === TARGET.origin) {
-        headers.set('location', locationUrl.pathname + locationUrl.search + locationUrl.hash);
-      } else {
-        headers.set('location', location);
-      }
+      const next = new URL(location, current);
+      headers.set(
+        'location',
+        next.origin === TARGET.origin
+          ? next.pathname + next.search + next.hash
+          : next.toString()
+      );
     }
 
     log('proxy_response_ready', {
       status: upstream.status,
-      contentType: upstream.headers.get('content-type')
+      contentType: upstream.headers.get('content-type'),
+      finalUrl: current.toString()
     });
 
     return new Response(method === 'HEAD' ? null : upstream.body, {
