@@ -1,7 +1,7 @@
 {
   "name": "zalcrm-proxy",
   "version": "1.0.0",
-  "description": "Vercel serverless reverse proxy for zalcrm.com with configurable white-label HTML rewriting",
+  "description": "Vercel serverless reverse proxy for zalcrm.com with diagnostics and configurable white-label HTML rewriting",
   "type": "module",
   "engines": {
     "node": "24.x"
