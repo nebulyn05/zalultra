@@ -219,7 +219,7 @@ export default async function handler(request) {
   }
 
   try {
-    const upstreamUrl = getUpstreamUrl(request);
+    let upstreamUrl = getUpstreamUrl(request);
     const method = request.method.toUpperCase();
     const upstreamController = new AbortController();
     let timeout;
@@ -257,48 +257,74 @@ export default async function handler(request) {
     }
 
     let upstream;
+    const MAX_REDIRECTS = 5;
     const fetchStartedAt = Date.now();
-    log('upstream_fetch_start', {
-      method,
-      url: upstreamUrl.toString()
-    });
 
-    const fetchPromise = fetch(upstreamUrl, init);
-    const timeoutPromise = new Promise((_, reject) => {
-      timeout = setTimeout(() => {
-        log('upstream_timeout_fired', {
-          timeoutMs: UPSTREAM_TIMEOUT_MS,
-          fetchMs: Date.now() - fetchStartedAt
+    for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount++) {
+      log('upstream_fetch_start', {
+        method,
+        url: upstreamUrl.toString(),
+        redirectCount
+      });
+
+      const fetchPromise = fetch(upstreamUrl, init);
+      const timeoutPromise = new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+          log('upstream_timeout_fired', {
+            timeoutMs: UPSTREAM_TIMEOUT_MS,
+            fetchMs: Date.now() - fetchStartedAt,
+            redirectCount
+          });
+          abortUpstream(new Error('Upstream timeout after ' + UPSTREAM_TIMEOUT_MS + 'ms'));
+          reject(new Error('Upstream timeout after ' + UPSTREAM_TIMEOUT_MS + 'ms'));
+        }, UPSTREAM_TIMEOUT_MS);
+      });
+
+      try {
+        upstream = await Promise.race([fetchPromise, timeoutPromise]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
+
+      const location = upstream.headers.get('location');
+
+      log('upstream_headers', {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        contentType: upstream.headers.get('content-type'),
+        contentLength: upstream.headers.get('content-length'),
+        location,
+        server: upstream.headers.get('server'),
+        via: upstream.headers.get('via'),
+        cacheStatus: upstream.headers.get('x-cache') || upstream.headers.get('cf-cache-status'),
+        fetchMs: Date.now() - fetchStartedAt
+      });
+
+      if (upstream.status >= 300 && upstream.status < 400 && location) {
+        if (redirectCount === MAX_REDIRECTS) {
+          throw new Error('Too many upstream redirects (>' + MAX_REDIRECTS + ')');
+        }
+
+        const nextUrl = new URL(location, upstreamUrl);
+        if (!['http:', 'https:'].includes(nextUrl.protocol)) {
+          throw new Error('Unsupported upstream redirect protocol: ' + nextUrl.protocol);
+        }
+
+        log('upstream_redirect_follow', {
+          from: upstreamUrl.toString(),
+          to: nextUrl.toString(),
+          status: upstream.status,
+          redirectCount: redirectCount + 1
         });
-        abortUpstream(new Error(`Upstream timeout after ${UPSTREAM_TIMEOUT_MS}ms`));
-        reject(new Error(`Upstream timeout after ${UPSTREAM_TIMEOUT_MS}ms`));
-      }, UPSTREAM_TIMEOUT_MS);
-    });
 
-    try {
-      upstream = await Promise.race([fetchPromise, timeoutPromise]);
-    } finally {
-      if (timeout) clearTimeout(timeout);
+        upstreamUrl = nextUrl;
+        continue;
+      }
+
+      break;
     }
-
-    log('upstream_headers', {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      contentType: upstream.headers.get('content-type'),
-      contentLength: upstream.headers.get('content-length'),
-      location: upstream.headers.get('location'),
-      server: upstream.headers.get('server'),
-      via: upstream.headers.get('via'),
-      cacheStatus: upstream.headers.get('x-cache') || upstream.headers.get('cf-cache-status'),
-      fetchMs: Date.now() - fetchStartedAt
-    });
 
     const responseHeaders = copyResponseHeaders(upstream);
-
-    const location = upstream.headers.get('location');
-    if (location) {
-      responseHeaders.set('location', rewriteUrl(location));
-    }
 
     const setCookies = typeof upstream.headers.getSetCookie === 'function'
       ? upstream.headers.getSetCookie()
@@ -306,23 +332,6 @@ export default async function handler(request) {
 
     for (const cookie of setCookies) {
       responseHeaders.append('set-cookie', rewriteCookie(cookie));
-    }
-
-    // Redirect responses do not need their upstream HTML body rewritten.
-    // Returning them immediately also prevents hanging on an unnecessary
-    // redirect response body.
-    if (upstream.status >= 300 && upstream.status < 400 && location) {
-      log('proxy_redirect', {
-        status: upstream.status,
-        location: responseHeaders.get('location'),
-        totalMs: Date.now() - startedAt
-      });
-
-      return new Response(null, {
-        status: upstream.status,
-        statusText: upstream.statusText,
-        headers: responseHeaders
-      });
     }
 
     const contentType = upstream.headers.get('content-type') || '';
