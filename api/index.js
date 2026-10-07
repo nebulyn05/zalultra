@@ -332,8 +332,16 @@ export default async function handler(request) {
   }
 
   try {
-    let upstreamUrl = getUpstreamUrl(request);
-    const method = request.method.toUpperCase();
+    let upstreamUrl;
+    let upstream;
+    let method;
+    let stage = 'initializing';
+
+    try {
+      stage = 'get_upstream_url';
+      upstreamUrl = getUpstreamUrl(request);
+      stage = 'read_method';
+      method = request.method.toUpperCase();
     const upstreamController = new AbortController();
     let timeout;
 
@@ -358,6 +366,7 @@ export default async function handler(request) {
       upstreamTimeoutMs: UPSTREAM_TIMEOUT_MS
     });
 
+    stage = 'build_forward_headers';
     const init = {
       method,
       headers: getForwardHeaders(request),
@@ -366,9 +375,11 @@ export default async function handler(request) {
     };
 
     if (!['GET', 'HEAD'].includes(method)) {
+      stage = 'read_request_body';
       init.body = await request.arrayBuffer();
     }
 
+    stage = 'fetch_start';
     log('upstream_fetch_start', {
       method,
       url: upstreamUrl.toString(),
@@ -376,7 +387,9 @@ export default async function handler(request) {
     });
 
     const fetchStartedAt = Date.now();
+    stage = 'fetch_create';
     const fetchPromise = fetch(upstreamUrl, init);
+    log('upstream_fetch_created', { url: upstreamUrl.toString() });
     const timeoutPromise = new Promise((_, reject) => {
       timeout = setTimeout(() => {
         log('upstream_timeout_fired', {
@@ -468,6 +481,15 @@ export default async function handler(request) {
       headers: responseHeaders
     });
   } catch (error) {
+    console.error(JSON.stringify({
+      requestId,
+      event: 'proxy_stage_failure',
+      stage: typeof stage === 'string' ? stage : 'unknown',
+      errorName: error?.name,
+      errorMessage: error?.message,
+      elapsedMs: Date.now() - startedAt
+    }));
+
     const isAbort = error?.name === 'AbortError' || error?.code === 'ABORT_ERR' || /timeout|aborted/i.test(error?.message || '');
     console.error(JSON.stringify({
       requestId,
