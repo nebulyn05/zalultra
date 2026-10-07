@@ -1,8 +1,29 @@
 import { JSDOM } from 'jsdom';
 
-const TARGET_URL = process.env.TARGET_URL || 'https://zalcrm.com';
+const RAW_TARGET_URL = process.env.TARGET_URL || 'https://zalcrm.com';
 const BRAND_NAME = process.env.BRAND_NAME || 'YourBrand';
-const TARGET = new URL(TARGET_URL);
+
+function normalizeTargetUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'https://zalcrm.com';
+
+  try {
+    const withScheme = /^[a-z][a-z\d+.-]*:\/\//i.test(raw)
+      ? raw
+      : `https://${raw}`;
+    const url = new URL(withScheme);
+
+    if (!['http:', 'https:'].includes(url.protocol)) {
+      throw new Error('TARGET_URL must use http or https');
+    }
+
+    return url;
+  } catch {
+    throw new Error(`Invalid TARGET_URL configuration: ${raw}`);
+  }
+}
+
+const TARGET = normalizeTargetUrl(RAW_TARGET_URL);
 
 const HOP_BY_HOP_HEADERS = new Set([
   'connection',
@@ -40,7 +61,8 @@ const REQUEST_HEADERS = new Set([
 
 function getUpstreamUrl(request) {
   const incoming = new URL(request.url);
-  return new URL(incoming.pathname + incoming.search, TARGET);
+  const path = incoming.pathname.startsWith('/') ? incoming.pathname : `/${incoming.pathname}`;
+  return new URL(`${path}${incoming.search}`, TARGET.href);
 }
 
 function getForwardHeaders(request) {
@@ -63,7 +85,7 @@ function rewriteUrl(value) {
   if (!value) return value;
 
   try {
-    const url = new URL(value, TARGET);
+    const url = new URL(value, TARGET.href);
     if (url.origin !== TARGET.origin) return value;
 
     return url.pathname + url.search + url.hash;
@@ -109,9 +131,23 @@ async function rewriteHtml(body) {
   ).forEach((el) => el.remove());
 
   // Keep navigation and form submissions inside the proxy.
-  for (const selector of ['a[href]', 'link[href]', 'script[src]', 'img[src]', 'source[src]', 'video[src]', 'audio[src]', 'form[action]']) {
+  for (const selector of [
+    'a[href]',
+    'link[href]',
+    'script[src]',
+    'img[src]',
+    'source[src]',
+    'video[src]',
+    'audio[src]',
+    'form[action]'
+  ]) {
     doc.querySelectorAll(selector).forEach((el) => {
-      const attribute = selector.includes('[action]') ? 'action' : selector.includes('[href]') ? 'href' : 'src';
+      const attribute = selector.includes('[action]')
+        ? 'action'
+        : selector.includes('[href]')
+          ? 'href'
+          : 'src';
+
       const value = el.getAttribute(attribute);
       const rewritten = rewriteUrl(value);
 
@@ -149,7 +185,8 @@ export default async function handler(request) {
       status: 204,
       headers: {
         'access-control-allow-methods': 'GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS',
-        'access-control-allow-headers': request.headers.get('access-control-request-headers') || 'Content-Type, Authorization',
+        'access-control-allow-headers':
+          request.headers.get('access-control-request-headers') || 'Content-Type, Authorization',
         'access-control-allow-origin': request.headers.get('origin') || '*'
       }
     });
