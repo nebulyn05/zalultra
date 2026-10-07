@@ -374,14 +374,10 @@ export default async function handler(request) {
     });
 
     stage = 'build_forward_headers_start';
-    log('forward_headers_start', {
-      build: BUILD_MARKER,
-      method,
-      hasHeaders: Boolean(request.headers),
-      headersType: request.headers?.constructor?.name || typeof request.headers,
-      hasEntries: typeof request.headers?.entries === 'function'
-    });
-    const forwardHeaders = getForwardHeaders(request);
+    log('forward_headers_start', { build: BUILD_MARKER, method });
+    const forwardHeaders = new Headers();
+    forwardHeaders.set('host', TARGET.host);
+    log('forward_headers_ready', { build: BUILD_MARKER, headerCount: Array.from(forwardHeaders.keys()).length });
     log('forward_headers_ready', {
       build: BUILD_MARKER,
       headerCount: Array.from(forwardHeaders.keys()).length
