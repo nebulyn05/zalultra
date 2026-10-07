@@ -254,6 +254,11 @@ export default async function handler(request) {
         status: upstream.status,
         statusText: upstream.statusText,
         contentType: upstream.headers.get('content-type'),
+        contentLength: upstream.headers.get('content-length'),
+        location: upstream.headers.get('location'),
+        server: upstream.headers.get('server'),
+        via: upstream.headers.get('via'),
+        cacheStatus: upstream.headers.get('x-cache') || upstream.headers.get('cf-cache-status'),
         fetchMs: Date.now() - fetchStartedAt
       });
     } finally {
@@ -279,7 +284,16 @@ export default async function handler(request) {
 
     if (contentType.includes('text/html') && method !== 'HEAD') {
       const body = await upstream.text();
-      log('upstream_body_read', { bytes: Buffer.byteLength(body), contentType });
+      const bodyBytes = Buffer.byteLength(body);
+      const bodyPreview = body
+        .replace(/(set-cookie|authorization|password|token|csrf)[^\n]{0,120}/gi, '[redacted]')
+        .slice(0, 500);
+
+      log('upstream_body_read', {
+        bytes: bodyBytes,
+        contentType,
+        bodyPreview
+      });
       const rewriteStartedAt = Date.now();
       const rewritten = await rewriteHtml(body);
       log('html_rewritten', { inputBytes: Buffer.byteLength(body), outputBytes: Buffer.byteLength(rewritten), rewriteMs: Date.now() - rewriteStartedAt });
@@ -293,7 +307,13 @@ export default async function handler(request) {
       });
     }
 
-    log('proxy_complete', { status: upstream.status, streamed: method !== 'HEAD', totalMs: Date.now() - startedAt });
+    log('proxy_complete', {
+      status: upstream.status,
+      contentType,
+      contentLength: upstream.headers.get('content-length'),
+      streamed: method !== 'HEAD',
+      totalMs: Date.now() - startedAt
+    });
 
     return new Response(method === 'HEAD' ? null : upstream.body, {
       status: upstream.status,
