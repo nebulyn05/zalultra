@@ -61,7 +61,8 @@ const REQUEST_HEADERS = new Set([
 ]);
 
 function getUpstreamUrl(request) {
-  const incoming = new URL(request.url);
+  const requestUrl = String(request.url || '/');
+  const incoming = new URL(requestUrl, 'http://vercel.local');
   const path = incoming.pathname.startsWith('/') ? incoming.pathname : `/${incoming.pathname}`;
   const upstreamUrl = `${TARGET.origin}${path}${incoming.search}`;
   return new URL(upstreamUrl);
