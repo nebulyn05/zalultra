@@ -1,6 +1,7 @@
 const RAW_TARGET_URL = process.env.TARGET_URL || 'https://zalcrm.com';
-const BUILD_MARKER = 'inspect-upstream-body-2026-10-07';
+const BUILD_MARKER = 'fetch-timeout-phase-2026-10-07';
 const MAX_REDIRECTS = 5;
+const FETCH_TIMEOUT_MS = 12000;
 
 const TARGET = (() => {
   const raw = String(RAW_TARGET_URL).trim();
@@ -62,10 +63,17 @@ export default async function handler(request) {
 
       // Do not touch request.headers or add a Host header. The earlier
       // successful transport test proved bare fetch() works on this runtime.
-      upstream = await fetch(current, {
-        method,
-        redirect: 'manual'
-      });
+      const fetchController = new AbortController();
+      const fetchTimer = setTimeout(() => fetchController.abort(), FETCH_TIMEOUT_MS);
+      try {
+        upstream = await fetch(current, {
+          method,
+          redirect: 'manual',
+          signal: fetchController.signal
+        });
+      } finally {
+        clearTimeout(fetchTimer);
+      }
 
       log('fetch_after', {
         status: upstream.status,
