@@ -75,11 +75,19 @@ function getUpstreamUrl(request) {
 function getForwardHeaders(request) {
   const headers = new Headers();
 
-  for (const [name, value] of request.headers) {
+  const incomingHeaders = request.headers instanceof Headers
+    ? Array.from(request.headers.entries())
+    : Object.entries(request.headers || {});
+
+  for (const [name, rawValue] of incomingHeaders) {
     const lower = name.toLowerCase();
-    if (REQUEST_HEADERS.has(lower)) {
-      headers.set(name, value);
-    }
+    if (!REQUEST_HEADERS.has(lower)) continue;
+
+    const value = Array.isArray(rawValue)
+      ? rawValue.join(', ')
+      : String(rawValue ?? '');
+
+    headers.set(name, value);
   }
 
   headers.set('host', TARGET.host);
