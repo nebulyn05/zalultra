@@ -222,10 +222,20 @@ export default async function handler(request) {
     const upstreamUrl = getUpstreamUrl(request);
     const method = request.method.toUpperCase();
     const upstreamController = new AbortController();
-    const timeout = setTimeout(() => upstreamController.abort(new Error(`Upstream timeout after ${UPSTREAM_TIMEOUT_MS}ms`)), UPSTREAM_TIMEOUT_MS);
+    let timeout;
+
+    const abortUpstream = (reason) => {
+      if (!upstreamController.signal.aborted) {
+        upstreamController.abort(reason);
+      }
+    };
 
     if (request.signal) {
-      request.signal.addEventListener('abort', () => upstreamController.abort(new Error('Client request aborted')), { once: true });
+      request.signal.addEventListener(
+        'abort',
+        () => abortUpstream(new Error('Client request aborted')),
+        { once: true }
+      );
     }
 
     log('proxy_start', {
@@ -248,7 +258,28 @@ export default async function handler(request) {
 
     let upstream;
     const fetchStartedAt = Date.now();
-    upstream = await fetch(upstreamUrl, init);
+    log('upstream_fetch_start', {
+      method,
+      url: upstreamUrl.toString()
+    });
+
+    const fetchPromise = fetch(upstreamUrl, init);
+    const timeoutPromise = new Promise((_, reject) => {
+      timeout = setTimeout(() => {
+        log('upstream_timeout_fired', {
+          timeoutMs: UPSTREAM_TIMEOUT_MS,
+          fetchMs: Date.now() - fetchStartedAt
+        });
+        abortUpstream(new Error(`Upstream timeout after ${UPSTREAM_TIMEOUT_MS}ms`));
+        reject(new Error(`Upstream timeout after ${UPSTREAM_TIMEOUT_MS}ms`));
+      }, UPSTREAM_TIMEOUT_MS);
+    });
+
+    try {
+      upstream = await Promise.race([fetchPromise, timeoutPromise]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
 
     log('upstream_headers', {
       status: upstream.status,
@@ -281,7 +312,6 @@ export default async function handler(request) {
     // Returning them immediately also prevents hanging on an unnecessary
     // redirect response body.
     if (upstream.status >= 300 && upstream.status < 400 && location) {
-      clearTimeout(timeout);
       log('proxy_redirect', {
         status: upstream.status,
         location: responseHeaders.get('location'),
@@ -315,7 +345,6 @@ export default async function handler(request) {
 
       responseHeaders.delete('content-length');
 
-      clearTimeout(timeout);
 
       return new Response(rewritten, {
         status: upstream.status,
@@ -324,7 +353,6 @@ export default async function handler(request) {
       });
     }
 
-    clearTimeout(timeout);
 
     log('proxy_complete', {
       status: upstream.status,
