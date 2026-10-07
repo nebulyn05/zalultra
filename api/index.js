@@ -63,7 +63,8 @@ const REQUEST_HEADERS = new Set([
 function getUpstreamUrl(request) {
   const incoming = new URL(request.url);
   const path = incoming.pathname.startsWith('/') ? incoming.pathname : `/${incoming.pathname}`;
-  return new URL(`${path}${incoming.search}`, TARGET.href);
+  const upstreamUrl = `${TARGET.origin}${path}${incoming.search}`;
+  return new URL(upstreamUrl);
 }
 
 function getForwardHeaders(request) {
