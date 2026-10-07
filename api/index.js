@@ -60,9 +60,13 @@ const REQUEST_HEADERS = new Set([
   'x-requested-with'
 ]);
 
-function getUpstreamUrl(request) {
+function getIncomingUrl(request) {
   const requestUrl = String(request.url || '/');
-  const incoming = new URL(requestUrl, 'http://vercel.local');
+  return new URL(requestUrl, 'http://vercel.local');
+}
+
+function getUpstreamUrl(request) {
+  const incoming = getIncomingUrl(request);
   const path = incoming.pathname.startsWith('/') ? incoming.pathname : `/${incoming.pathname}`;
   const upstreamUrl = `${TARGET.origin}${path}${incoming.search}`;
   return new URL(upstreamUrl);
@@ -218,7 +222,7 @@ export default async function handler(request) {
 
     log('proxy_start', {
       method,
-      path: new URL(request.url).pathname,
+      path: getIncomingUrl(request).pathname,
       upstreamUrl: upstreamUrl.toString(),
       upstreamTimeoutMs: UPSTREAM_TIMEOUT_MS
     });
