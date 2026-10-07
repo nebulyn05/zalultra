@@ -3,17 +3,10 @@
   "version": "1.0.0",
   "description": "Vercel serverless reverse proxy for zalcrm.com with configurable white-label HTML rewriting",
   "type": "module",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node --watch server.js"
-  },
   "engines": {
     "node": "24.x"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "jsdom": "^24.1.0",
-    "node-fetch": "^3.3.2"
+    "jsdom": "^24.1.0"
   }
 }
