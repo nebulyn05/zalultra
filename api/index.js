@@ -247,23 +247,20 @@ export default async function handler(request) {
     }
 
     let upstream;
-    try {
-      const fetchStartedAt = Date.now();
-      upstream = await fetch(upstreamUrl, init);
-      log('upstream_headers', {
-        status: upstream.status,
-        statusText: upstream.statusText,
-        contentType: upstream.headers.get('content-type'),
-        contentLength: upstream.headers.get('content-length'),
-        location: upstream.headers.get('location'),
-        server: upstream.headers.get('server'),
-        via: upstream.headers.get('via'),
-        cacheStatus: upstream.headers.get('x-cache') || upstream.headers.get('cf-cache-status'),
-        fetchMs: Date.now() - fetchStartedAt
-      });
-    } finally {
-      clearTimeout(timeout);
-    }
+    const fetchStartedAt = Date.now();
+    upstream = await fetch(upstreamUrl, init);
+
+    log('upstream_headers', {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      contentType: upstream.headers.get('content-type'),
+      contentLength: upstream.headers.get('content-length'),
+      location: upstream.headers.get('location'),
+      server: upstream.headers.get('server'),
+      via: upstream.headers.get('via'),
+      cacheStatus: upstream.headers.get('x-cache') || upstream.headers.get('cf-cache-status'),
+      fetchMs: Date.now() - fetchStartedAt
+    });
 
     const responseHeaders = copyResponseHeaders(upstream);
 
@@ -278,6 +275,24 @@ export default async function handler(request) {
 
     for (const cookie of setCookies) {
       responseHeaders.append('set-cookie', rewriteCookie(cookie));
+    }
+
+    // Redirect responses do not need their upstream HTML body rewritten.
+    // Returning them immediately also prevents hanging on an unnecessary
+    // redirect response body.
+    if (upstream.status >= 300 && upstream.status < 400 && location) {
+      clearTimeout(timeout);
+      log('proxy_redirect', {
+        status: upstream.status,
+        location: responseHeaders.get('location'),
+        totalMs: Date.now() - startedAt
+      });
+
+      return new Response(null, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders
+      });
     }
 
     const contentType = upstream.headers.get('content-type') || '';
@@ -300,12 +315,16 @@ export default async function handler(request) {
 
       responseHeaders.delete('content-length');
 
+      clearTimeout(timeout);
+
       return new Response(rewritten, {
         status: upstream.status,
         statusText: upstream.statusText,
         headers: responseHeaders
       });
     }
+
+    clearTimeout(timeout);
 
     log('proxy_complete', {
       status: upstream.status,
