@@ -265,7 +265,7 @@ async function readUpstreamHtml(body, {
         // ZalCRM can keep the HTTP connection open after the complete
         // document has arrived. Once the closing HTML tag is present,
         // there is nothing useful left for the white-label proxy to wait for.
-        if (/<\\/html\\s*>/i.test(text)) {
+        if (/<\/html\s*>/i.test(text)) {
           settled = true;
           break;
         }
