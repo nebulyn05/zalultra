@@ -2,6 +2,7 @@ import { JSDOM } from 'jsdom';
 
 const RAW_TARGET_URL = process.env.TARGET_URL || 'https://zalcrm.com';
 const BRAND_NAME = process.env.BRAND_NAME || 'YourBrand';
+const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 20000);
 
 function normalizeTargetUrl(value) {
   const raw = String(value || '').trim();
@@ -180,6 +181,17 @@ export const runtime = 'nodejs';
 export const maxDuration = 60;
 
 export default async function handler(request) {
+  const requestId = crypto.randomUUID();
+  const startedAt = Date.now();
+  const log = (event, details = {}) => {
+    console.log(JSON.stringify({
+      requestId,
+      event,
+      ...details,
+      elapsedMs: Date.now() - startedAt
+    }));
+  };
+
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
@@ -195,18 +207,45 @@ export default async function handler(request) {
   try {
     const upstreamUrl = getUpstreamUrl(request);
     const method = request.method.toUpperCase();
+    const upstreamController = new AbortController();
+    const timeout = setTimeout(() => upstreamController.abort(new Error(`Upstream timeout after ${UPSTREAM_TIMEOUT_MS}ms`)), UPSTREAM_TIMEOUT_MS);
+
+    if (request.signal) {
+      request.signal.addEventListener('abort', () => upstreamController.abort(new Error('Client request aborted')), { once: true });
+    }
+
+    log('proxy_start', {
+      method,
+      path: new URL(request.url).pathname,
+      upstreamUrl: upstreamUrl.toString(),
+      upstreamTimeoutMs: UPSTREAM_TIMEOUT_MS
+    });
 
     const init = {
       method,
       headers: getForwardHeaders(request),
-      redirect: 'manual'
+      redirect: 'manual',
+      signal: upstreamController.signal
     };
 
     if (!['GET', 'HEAD'].includes(method)) {
       init.body = await request.arrayBuffer();
     }
 
-    const upstream = await fetch(upstreamUrl, init);
+    let upstream;
+    try {
+      const fetchStartedAt = Date.now();
+      upstream = await fetch(upstreamUrl, init);
+      log('upstream_headers', {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        contentType: upstream.headers.get('content-type'),
+        fetchMs: Date.now() - fetchStartedAt
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
+
     const responseHeaders = copyResponseHeaders(upstream);
 
     const location = upstream.headers.get('location');
@@ -226,7 +265,10 @@ export default async function handler(request) {
 
     if (contentType.includes('text/html') && method !== 'HEAD') {
       const body = await upstream.text();
+      log('upstream_body_read', { bytes: Buffer.byteLength(body), contentType });
+      const rewriteStartedAt = Date.now();
       const rewritten = await rewriteHtml(body);
+      log('html_rewritten', { inputBytes: Buffer.byteLength(body), outputBytes: Buffer.byteLength(rewritten), rewriteMs: Date.now() - rewriteStartedAt });
 
       responseHeaders.delete('content-length');
 
@@ -237,20 +279,33 @@ export default async function handler(request) {
       });
     }
 
+    log('proxy_complete', { status: upstream.status, streamed: method !== 'HEAD', totalMs: Date.now() - startedAt });
+
     return new Response(method === 'HEAD' ? null : upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
       headers: responseHeaders
     });
   } catch (error) {
-    console.error('Proxy error:', error);
+    const isAbort = error?.name === 'AbortError' || error?.code === 'ABORT_ERR' || /timeout|aborted/i.test(error?.message || '');
+    console.error(JSON.stringify({
+      requestId,
+      event: isAbort ? 'upstream_abort_or_timeout' : 'proxy_error',
+      errorName: error?.name,
+      errorCode: error?.code,
+      errorMessage: error?.message,
+      cause: error?.cause ? String(error.cause) : undefined,
+      stack: error?.stack,
+      elapsedMs: Date.now() - startedAt
+    }));
 
     return Response.json(
       {
-        error: 'Upstream proxy request failed',
-        message: error instanceof Error ? error.message : 'Unknown error'
+        error: isAbort ? 'Upstream request timed out or was aborted' : 'Upstream proxy request failed',
+        message: error instanceof Error ? error.message : 'Unknown error',
+        requestId
       },
-      { status: 502 }
+      { status: isAbort ? 504 : 502 }
     );
   }
 }
