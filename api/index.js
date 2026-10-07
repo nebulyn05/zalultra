@@ -201,8 +201,7 @@ async function readUpstreamHtml(body, {
 
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  const chunks = [];
-  let totalBytes = 0;
+    let totalBytes = 0;
   let text = '';
   const startedAt = Date.now();
 
@@ -261,7 +260,6 @@ async function readUpstreamHtml(body, {
         }
 
         const chunk = decoder.decode(value, { stream: true });
-        chunks.push(chunk);
         text += chunk;
 
         // ZalCRM can keep the HTTP connection open after the complete
