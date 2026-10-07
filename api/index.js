@@ -1,5 +1,5 @@
 const RAW_TARGET_URL = process.env.TARGET_URL || 'https://zalcrm.com';
-const BUILD_MARKER = 'manual-follow-no-headers-2026-10-07';
+const BUILD_MARKER = 'manual-follow-buffer-body-2026-10-07';
 const MAX_REDIRECTS = 5;
 
 const TARGET = (() => {
@@ -126,13 +126,21 @@ export default async function handler(request) {
       );
     }
 
+    let body = null;
+    if (method !== 'HEAD') {
+      log('body_read_start', { finalUrl: current.toString() });
+      body = await upstream.arrayBuffer();
+      log('body_read_complete', { bytes: body.byteLength });
+    }
+
     log('response_ready', {
       status: upstream.status,
       finalUrl: current.toString(),
-      contentType: upstream.headers.get('content-type')
+      contentType: upstream.headers.get('content-type'),
+      bodyBytes: body ? body.byteLength : 0
     });
 
-    return new Response(method === 'HEAD' ? null : upstream.body, {
+    return new Response(body, {
       status: upstream.status,
       statusText: upstream.statusText,
       headers
