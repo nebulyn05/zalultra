@@ -3,6 +3,7 @@ import { JSDOM } from 'jsdom';
 const RAW_TARGET_URL = process.env.TARGET_URL || 'https://zalcrm.com';
 const BRAND_NAME = process.env.BRAND_NAME || 'YourBrand';
 const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS || 20000);
+const BUILD_MARKER = 'diagnostic-2026-10-07-hdr2';
 
 function normalizeTargetUrl(value) {
   const raw = String(value || '').trim();
@@ -75,9 +76,15 @@ function getUpstreamUrl(request) {
 function getForwardHeaders(request) {
   const headers = new Headers();
 
-  const incomingHeaders = request.headers instanceof Headers
-    ? Array.from(request.headers.entries())
-    : Object.entries(request.headers || {});
+  const rawHeaders = request.headers;
+  let incomingHeaders;
+  if (rawHeaders && typeof rawHeaders.entries === 'function') {
+    incomingHeaders = Array.from(rawHeaders.entries());
+  } else if (rawHeaders && typeof rawHeaders === 'object') {
+    incomingHeaders = Object.entries(rawHeaders);
+  } else {
+    incomingHeaders = [];
+  }
 
   for (const [name, rawValue] of incomingHeaders) {
     const lower = name.toLowerCase();
@@ -359,6 +366,7 @@ export default async function handler(request) {
     }
 
     log('proxy_start', {
+      build: BUILD_MARKER,
       method,
       path: getIncomingUrl(request).pathname,
       upstreamUrl: upstreamUrl.toString(),
@@ -366,9 +374,18 @@ export default async function handler(request) {
     });
 
     stage = 'build_forward_headers_start';
-    log('forward_headers_start', { method });
+    log('forward_headers_start', {
+      build: BUILD_MARKER,
+      method,
+      hasHeaders: Boolean(request.headers),
+      headersType: request.headers?.constructor?.name || typeof request.headers,
+      hasEntries: typeof request.headers?.entries === 'function'
+    });
     const forwardHeaders = getForwardHeaders(request);
-    log('forward_headers_ready', { headerCount: Array.from(forwardHeaders.keys()).length });
+    log('forward_headers_ready', {
+      build: BUILD_MARKER,
+      headerCount: Array.from(forwardHeaders.keys()).length
+    });
     stage = 'build_fetch_init';
     const init = {
       method,
