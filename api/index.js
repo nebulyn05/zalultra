@@ -191,6 +191,121 @@ async function rewriteHtml(body) {
   return dom.serialize();
 }
 
+
+async function readUpstreamHtml(body, {
+  maxBytes = 8 * 1024 * 1024,
+  totalTimeoutMs = 15000,
+  idleTimeoutMs = 4000
+} = {}) {
+  if (!body) return '';
+
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  const chunks = [];
+  let totalBytes = 0;
+  let text = '';
+  const startedAt = Date.now();
+
+  let idleTimer;
+  let totalTimer;
+  let settled = false;
+
+  const cleanup = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (totalTimer) clearTimeout(totalTimer);
+  };
+
+  const fail = async (error) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    try {
+      await reader.cancel();
+    } catch {
+      // Best-effort cancellation.
+    }
+    throw error;
+  };
+
+  const armIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reader.cancel().catch(() => {});
+      }
+    }, idleTimeoutMs);
+  };
+
+  totalTimer = setTimeout(() => {
+    if (!settled) {
+      settled = true;
+      cleanup();
+      reader.cancel().catch(() => {});
+    }
+  }, totalTimeoutMs);
+
+  try {
+    armIdleTimer();
+
+    while (!settled) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      if (value) {
+        totalBytes += value.byteLength;
+
+        if (totalBytes > maxBytes) {
+          await fail(new Error('Upstream HTML exceeded ' + maxBytes + ' bytes'));
+        }
+
+        const chunk = decoder.decode(value, { stream: true });
+        chunks.push(chunk);
+        text += chunk;
+
+        // ZalCRM can keep the HTTP connection open after the complete
+        // document has arrived. Once the closing HTML tag is present,
+        // there is nothing useful left for the white-label proxy to wait for.
+        if (/<\\/html\\s*>/i.test(text)) {
+          settled = true;
+          break;
+        }
+      }
+
+      armIdleTimer();
+    }
+
+    cleanup();
+
+    if (!settled && Date.now() - startedAt >= totalTimeoutMs) {
+      throw new Error('Upstream HTML body timed out after ' + totalTimeoutMs + 'ms');
+    }
+
+    if (!text) {
+      text = decoder.decode();
+    } else {
+      text += decoder.decode();
+    }
+
+    try {
+      await reader.cancel();
+    } catch {
+      // Best-effort cancellation.
+    }
+
+    return text;
+  } catch (error) {
+    cleanup();
+    try {
+      await reader.cancel();
+    } catch {
+      // Best-effort cancellation.
+    }
+    throw error;
+  }
+}
+
 export const runtime = 'nodejs';
 export const maxDuration = 60;
 
@@ -337,7 +452,7 @@ export default async function handler(request) {
     const contentType = upstream.headers.get('content-type') || '';
 
     if (contentType.includes('text/html') && method !== 'HEAD') {
-      const body = await upstream.text();
+      const body = await readUpstreamHtml(upstream.body);
       const bodyBytes = Buffer.byteLength(body);
       const bodyPreview = body
         .replace(/(set-cookie|authorization|password|token|csrf)[^\n]{0,120}/gi, '[redacted]')
