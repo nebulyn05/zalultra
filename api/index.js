@@ -1,5 +1,5 @@
 const RAW_TARGET_URL = process.env.TARGET_URL || 'https://zalcrm.com';
-const BUILD_MARKER = 'manual-follow-buffer-body-2026-10-07';
+const BUILD_MARKER = 'inspect-upstream-body-2026-10-07';
 const MAX_REDIRECTS = 5;
 
 const TARGET = (() => {
@@ -128,7 +128,23 @@ export default async function handler(request) {
 
     let body = null;
     if (method !== 'HEAD') {
+      const headerSnapshot = {};
+      for (const [name, value] of upstream.headers) {
+        if (['content-length','content-encoding','transfer-encoding','connection','cache-control','server'].includes(name.toLowerCase())) {
+          headerSnapshot[name] = value;
+        }
+      }
+      log('body_inspect', { headers: headerSnapshot });
+
+      if (!upstream.body) throw new Error('Upstream response has no body stream');
+      const reader = upstream.body.getReader();
       log('body_read_start', { finalUrl: current.toString() });
+      const first = await Promise.race([
+        reader.read(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Timed out waiting for first upstream body chunk')), 10000))
+      ]);
+      log('body_first_chunk', { done: first.done, bytes: first.value ? first.value.byteLength : 0 });
+      reader.releaseLock();
       body = await upstream.arrayBuffer();
       log('body_read_complete', { bytes: body.byteLength });
     }
